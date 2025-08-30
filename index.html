@@ -1,0 +1,113 @@
+<script>
+    // --- Step 1: Google Apps Script(GAS)のAPIからデータを取得 ---
+    async function fetchDataFromAPI(apiUrl) {
+        try {
+            const url = `${apiUrl}?t=${new Date().getTime()}`; // キャッシュ対策
+            const response = await fetch(url);
+            if (!response.ok) {
+                throw new Error('APIの読み込みに失敗しました。GASのURLや公開設定を確認してください。');
+            }
+            return await response.json(); // JSONとしてデータを解析
+        } catch (error) {
+            console.error('データ取得エラー:', error);
+            document.body.innerHTML = `<div class="text-center p-8"><p class="text-red-600 font-bold">${error.message}</p></div>`;
+            return null;
+        }
+    }
+
+    // --- Step 2: 取得したJSONデータをグラフ用に変換 ---
+    function parseData(jsonData) {
+        return jsonData.map(item => {
+            // スプレッドシートの列名（ヘッダー）を使ってデータを取得
+            const itemStr = item['アイテム'] || '-';
+            
+            const obj = {
+                依頼番号: item['依頼番号'],
+                開始日: item['開始日'],
+                完了日: item['完了日'],
+                総日数: parseFloat(item['総日数']) || 0,
+                作業人日: parseFloat(item['作業人日']) || 0,
+                カテゴリ: item['カテゴリ'] || '不明',
+                アイテム: itemStr,
+                型番: item['型番'],
+                依頼部署: item['依頼部署'] || '不明',
+                cleanItem: getCleanItemName(itemStr),
+                month: item['開始日'] ? new Date(item['開始日']).toISOString().substring(0, 7) : '不明',
+                startDate: new Date(item['開始日']),
+                endDate: new Date(new Date(item['完了日']).getTime() + (24 * 60 * 60 * 1000))
+            };
+            
+            if (isNaN(obj.startDate.getTime())) return null; // 不正な日付は除外
+            
+            return obj;
+        }).filter(d => d !== null);
+    }
+
+    // --- 既存のグラフ描画関数（ここは変更なし） ---
+    const tooltip = d3.select("#tooltip");
+    function showTooltip(event, content) {
+        tooltip.style("opacity", 1).html(content);
+        const tooltipNode = tooltip.node();
+        const containerNode = d3.select('body').node();
+        let left = event.pageX + 15;
+        let top = event.pageY - 15;
+        if (left + tooltipNode.offsetWidth > containerNode.clientWidth) { left = event.pageX - tooltipNode.offsetWidth - 15; }
+        if (top + tooltipNode.offsetHeight > containerNode.clientHeight) { top = event.pageY - tooltipNode.offsetHeight; }
+        if (top < 0) { top = event.pageY + 15; }
+        tooltip.style("left", `${left}px`).style("top", `${top}px`);
+    }
+    function hideTooltip() { tooltip.style("opacity", 0); }
+    function getCleanItemName(itemStr) {
+        const patterns = [
+            { pattern: /(ねしずえ\(\d+次\))/, name: 'ねしずえ(n次)' }, { pattern: /(ねソニック\(\d+次\))/, name: 'ねソニック(n次)' },
+            { pattern: /(ねリヴァイ\(\d+次\))/, name: 'ねリヴァイ(n次)' }, { pattern: /(Mかにクレーン\(\d+次\))/, name: 'Mかにクレーン(n次)' },
+            { pattern: /(ねハンジ\(再\))/, name: 'ねハンジ(再)' }, { pattern: /(ね太宰\(\d+次\))/, name: 'ね太宰(n次)' },
+            { pattern: /(ねアルフォンス\(\d+次\))/, name: 'ねアルフォンス(n次)' }, { pattern: /(ねエドワード\(\d+次\))/, name: 'ねエドワード(n次)' },
+            { pattern: /(SCイレイナ\(再\))/, name: 'SCイレイナ(再)' }, { pattern: /(Mバルディ\(再\))/, name: 'Mバルディ(再)' },
+            { pattern: /(ね桜ミク\(再\))/, name: 'ね桜ミク(再)' }, { pattern: /(Hbオベロン3rd)/, name: 'Hbオベロン3rd' },
+            { pattern: /(Hbセバスチャン)/, name: 'Hbセバスチャン' }, { pattern: /(Hbスニーカーroot)/, name: 'Hbスニーカーroot' },
+            { pattern: /(ジャック共通ベース|モスマン共通ベース)/, name: 'ジャック共通ベース' }, { pattern: /(archGirlアーキタイプ)/, name: 'archGirlアーキタイプ' },
+            { pattern: /(ねど碇シンジ)/, name: 'ねど碇シンジ' }, { pattern: /(シンプルスタンド|Simpタワータイプ)/, name: 'シンプルスタンド' },
+            { pattern: /(スライムフィールドベース)/, name: 'スライムフィールドベース' }, { pattern: /(ね展示用パーカー)/, name: 'ね展示用パーカー' },
+            { pattern: /(ジャックプラモ共用金型)/, name: 'ジャックプラモ共用金型' }, { pattern: /(デモニホプラモ共用金型)/, name: 'デモニホプラモ共用金型' },
+            { pattern: /(ねんどろFM|フェイスメーカー鼻あり)/, name: 'フェイスメーカー/FM' }, { pattern: /(PAジュピター)/, name: 'PAジュピター' },
+            { pattern: /(特典)/, name: '特典' },
+        ];
+        if (typeof itemStr !== 'string') return '不明';
+        for (const p of patterns) { if (p.pattern.test(itemStr)) { return p.name; } }
+        const firstWord = itemStr.split(' ')[0];
+        return firstWord || itemStr;
+    }
+    function drawGanttChart(data) { /* ... 元のコードのまま ... */ }
+    function drawMonthlyCountChart(data) { /* ... 元のコードのまま ... */ }
+    function drawCategoryChart(data) { /* ... 元のコードのまま ... */ }
+    function drawItemChart(data) { /* ... 元のコードのまま ... */ }
+    function drawOverallCategoryChart(data) { /* ... 元のコードのまま ... */ }
+
+    // --- Step 3: 全体の処理を実行するメインの関数 ---
+    async function initializeDashboard() {
+        // ★★★ ここにGASのウェブアプリURLを貼り付け ★★★
+        const API_URL = 'https://script.google.com/a/macros/goodsmile.jp/s/AKfycbyeyLlpWDHUp2qeRd2jM1tn8DOF-yR3QM87eHSOvK_ETBhQ3fAztnxru_rLn3z3OjrHig/exec';
+
+        const jsonData = await fetchDataFromAPI(API_URL);
+
+        if (jsonData) {
+            const fullDataset = parseData(jsonData);
+            const ganttData = [...fullDataset].sort((a, b) => d3.ascending(a.startDate, b.startDate));
+
+            function drawAllCharts() {
+                drawGanttChart(ganttData);
+                drawOverallCategoryChart(fullDataset);
+                drawMonthlyCountChart(fullDataset);
+                drawCategoryChart(fullDataset);
+                drawItemChart(fullDataset);
+            }
+
+            drawAllCharts();
+            window.addEventListener('resize', drawAllCharts);
+        }
+    }
+
+    // --- ページの読み込みが完了したらダッシュボードを初期化 ---
+    document.addEventListener('DOMContentLoaded', initializeDashboard);
+</script>
