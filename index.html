@@ -125,7 +125,7 @@
 
     <script>
         // --- Step 1: Google Apps Script(GAS)のAPIからデータを取得 ---
-        async function fetchDataFromAPI(apiUrl) {
+        async function fetchDataFromAPI(https://script.google.com/a/macros/goodsmile.jp/s/AKfycbyC6VDPTHU3yUJbB4nqCQYhkd-vthgDlfp2aEH6eOECwWOEJJBrW73mzL2UwF19RqC3lA/exec) {
             try {
                 const url = `${apiUrl}?t=${new Date().getTime()}`; // キャッシュ対策
                 const response = await fetch(url);
@@ -347,4 +347,5 @@
              legend.selectAll("*").remove();
              allCategories.forEach(category => {
                  const legendItem = legend.append("div").attr("class", "legend-item");
+
                  legendItem.append("div").attr("class", "legend-color").style("
