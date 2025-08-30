@@ -1,273 +1,129 @@
-// --- Step 1: Google Apps Script(GAS)のAPIからデータを取得 ---
-async function fetchDataFromAPI(apiUrl) {
-    try {
-        const url = `${apiUrl}?t=${new Date().getTime()}`; // キャッシュ対策
-        const response = await fetch(url);
-        if (!response.ok) {
-            throw new Error('APIの読み込みに失敗しました。GASのURLや公開設定を確認してください。');
-        }
-        return await response.json(); // JSONとしてデータを解析
-    } catch (error) {
-        console.error('データ取得エラー:', error);
-        document.body.innerHTML = `<div class="text-center p-8"><p class="text-red-600 font-bold">${error.message}</p></div>`;
-        return null;
-    }
-}
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>業務実績ダッシュボード</title>
+    
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
 
-// --- Step 2: 取得したJSONデータをグラフ用に変換 ---
-function parseData(jsonData) {
-    return jsonData.map(item => {
-        const itemStr = item['アイテム'] || '-';
-        const obj = {
-            依頼番号: item['依頼番号'],
-            開始日: item['開始日'],
-            完了日: item['完了日'],
-            総日数: parseFloat(item['総日数']) || 0,
-            作業人日: parseFloat(item['作業人日']) || 0,
-            カテゴリ: item['カテゴリ'] || '不明',
-            アイテム: itemStr,
-            型番: item['型番'],
-            依頼部署: item['依頼部署'] || '不明',
-            cleanItem: getCleanItemName(itemStr),
-            month: item['開始日'] ? new Date(item['開始日']).toISOString().substring(0, 7) : '不明',
-            startDate: new Date(item['開始日']),
-            endDate: new Date(new Date(item['完了日']).getTime() + (24 * 60 * 60 * 1000))
-        };
-        if (isNaN(obj.startDate.getTime())) return null;
-        return obj;
-    }).filter(d => d !== null);
-}
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+        .tooltip { opacity: 0; position: absolute; transition: opacity 0.3s; pointer-events: none; background-color: white; border: 1px solid #ddd; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); padding: 12px; font-size: 12px; min-width: 220px; z-index: 10; }
+        .chart-container svg { width: 100%; height: auto; }
+        .legend-item { display: flex; align-items: center; margin-right: 12px; margin-bottom: 4px; font-size: 12px; }
+        .legend-color { width: 12px; height: 12px; border-radius: 3px; margin-right: 6px; }
+        .grid-lines .domain { stroke: none; }
+        .horizontal-grid line { stroke: #e5e7eb; stroke-opacity: 0.7; shape-rendering: crispEdges; }
+        .vertical-grid line { stroke: #d1d5db; stroke-opacity: 1; shape-rendering: crispEdges; }
+        #donut-center-text-val { font-size: 2.5em; font-weight: bold; fill: #111827; }
+        #donut-center-text-label { font-size: 1em; fill: #6b7280; }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 p-4 sm:p-6 md:p-8">
 
-// --- グラフ描画のための補助関数 ---
-const tooltip = d3.select("#tooltip");
+    <div class="max-w-7xl mx-auto space-y-8">
+        <h1 class="text-3xl sm:text-4xl font-bold text-gray-900 text-center">工程開発_加工室　作業実績</h1>
+        <div class="bg-white rounded-2xl shadow-lg p-4 sm:p-6 space-y-12">
+            <div>
+                <header class="mb-6"><h2 class="text-2xl sm:text-3xl font-bold text-gray-900">全体・月次サマリー</h2></header>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 items-center">
+                    <div class="order-1">
+                        <h3 class="text-xl font-semibold text-gray-800 mb-4 text-center">全体カテゴリ割合</h3>
+                        <div id="overall-category-chart" class="chart-container w-full max-w-md mx-auto"></div>
+                    </div>
+                    <div class="order-2 space-y-8">
+                        <div>
+                            <h3 class="text-xl font-semibold text-gray-800 mb-4 text-center">月別 依頼件数</h3>
+                            <div id="monthly-count-chart" class="chart-container w-full"></div>
+                        </div>
+                        <div>
+                            <h3 class="text-xl font-semibold text-gray-800 mb-4 text-center">月別 カテゴリ内訳</h3>
+                            <div id="monthly-category-chart" class="chart-container w-full"></div>
+                        </div>
+                    </div>
+                </div>
+                <div class="mt-8"><div id="category-legend" class="flex flex-wrap justify-center mt-4"></div></div>
+            </div>
+            <hr class="border-gray-200">
+            <div>
+                <header class="mb-6">
+                    <h2 class="text-2xl sm:text-3xl font-bold text-gray-900">アイテム別 合計作業人日</h2>
+                    <p class="text-gray-600 mt-1">アイテムごとの合計作業人日とカテゴリ内訳です。（型番を無視して集計）</p>
+                </header>
+                <div id="item-summary-chart" class="chart-container w-full"></div>
+            </div>
+            <hr class="border-gray-200">
+            <div>
+                <header class="mb-6">
+                    <h2 class="text-2xl sm:text-3xl font-bold text-gray-900">業務実績：依頼期間ガントチャート</h2>
+                    <p class="text-gray-600 mt-1">各バーをホバーすると詳細データが表示されます。（開始日順）</p>
+                </header>
+                <div id="gantt-chart-container" class="chart-container w-full"></div>
+            </div>
+        </div>
+    </div>
+    <div id="tooltip" class="tooltip"></div>
 
-function showTooltip(event, content) {
-    tooltip.style("opacity", 1).html(content);
-    const tooltipNode = tooltip.node();
-    const containerNode = d3.select('body').node();
-    let left = event.pageX + 15;
-    let top = event.pageY - 15;
-    if (left + tooltipNode.offsetWidth > containerNode.clientWidth) { left = event.pageX - tooltipNode.offsetWidth - 15; }
-    if (top + tooltipNode.offsetHeight > containerNode.clientHeight) { top = event.pageY - tooltipNode.offsetHeight; }
-    if (top < 0) { top = event.pageY + 15; }
-    tooltip.style("left", `${left}px`).style("top", `${top}px`);
-}
-
-function hideTooltip() {
-    tooltip.style("opacity", 0);
-}
-
-function getCleanItemName(itemStr) {
-    const patterns = [
-        { pattern: /(ねしずえ\(\d+次\))/, name: 'ねしずえ(n次)' }, { pattern: /(ねソニック\(\d+次\))/, name: 'ねソニック(n次)' },
-        { pattern: /(ねリヴァイ\(\d+次\))/, name: 'ねリヴァイ(n次)' }, { pattern: /(Mかにクレーン\(\d+次\))/, name: 'Mかにクレーン(n次)' },
-        { pattern: /(ねハンジ\(再\))/, name: 'ねハンジ(再)' }, { pattern: /(ね太宰\(\d+次\))/, name: 'ね太宰(n次)' },
-        { pattern: /(ねアルフォンス\(\d+次\))/, name: 'ねアルフォンス(n次)' }, { pattern: /(ねエドワード\(\d+次\))/, name: 'ねエドワード(n次)' },
-        { pattern: /(SCイレイナ\(再\))/, name: 'SCイレイナ(再)' }, { pattern: /(Mバルディ\(再\))/, name: 'Mバルディ(再)' },
-        { pattern: /(ね桜ミク\(再\))/, name: 'ね桜ミク(再)' }, { pattern: /(Hbオベロン3rd)/, name: 'Hbオベロン3rd' },
-        { pattern: /(Hbセバスチャン)/, name: 'Hbセバスチャン' }, { pattern: /(Hbスニーカーroot)/, name: 'Hbスニーカーroot' },
-        { pattern: /(ジャック共通ベース|モスマン共通ベース)/, name: 'ジャック共通ベース' }, { pattern: /(archGirlアーキタイプ)/, name: 'archGirlアーキタイプ' },
-        { pattern: /(ねど碇シンジ)/, name: 'ねど碇シンジ' }, { pattern: /(シンプルスタンド|Simpタワータイプ)/, name: 'シンプルスタンド' },
-        { pattern: /(スライムフィールドベース)/, name: 'スライムフィールドベース' }, { pattern: /(ね展示用パーカー)/, name: 'ね展示用パーカー' },
-        { pattern: /(ジャックプラモ共用金型)/, name: 'ジャックプラモ共用金型' }, { pattern: /(デモニホプラモ共用金型)/, name: 'デモニホプラモ共用金型' },
-        { pattern: /(ねんどろFM|フェイスメーカー鼻あり)/, name: 'フェイスメーカー/FM' }, { pattern: /(PAジュピター)/, name: 'PAジュピター' },
-        { pattern: /(特典)/, name: '特典' },
-    ];
-    if (typeof itemStr !== 'string') return '不明';
-    for (const p of patterns) { if (p.pattern.test(itemStr)) { return p.name; } }
-    const firstWord = itemStr.split(' ')[0];
-    return firstWord || itemStr;
-}
-
-// --- 各グラフの描画関数 ---
-function drawGanttChart(data) {
-    const container = d3.select("#gantt-chart-container");
-    container.select("svg").remove();
-    if (!data || data.length === 0) return;
-    const containerWidth = container.node().getBoundingClientRect().width;
-    const margin = {top: 20, right: 30, bottom: 40, left: 80};
-    const rowHeight = 20;
-    const height = data.length * rowHeight;
-    const chartHeight = height + margin.top + margin.bottom;
-    const width = containerWidth - margin.left - margin.right;
-    const svg = container.append("svg").attr("viewBox", `0 0 ${width + margin.left + margin.right} ${chartHeight}`).append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-    const taskNames = data.map(d => d.依頼番号);
-    const dateRange = [d3.min(data, d => d.startDate), d3.max(data, d => d.endDate)];
-    const xScale = d3.scaleTime().domain(dateRange).range([0, width]);
-    const yScale = d3.scaleBand().domain(taskNames).range([0, height]).padding(0.2);
-    const colorScale = d3.scaleOrdinal(d3.schemeTableau10).domain([...new Set(data.map(d => d.カテゴリ))]);
-    svg.append("g").attr("class", "grid-lines vertical-grid").call(d3.axisBottom(xScale).ticks(d3.timeWeek.every(1)).tickSize(-height).tickFormat(""));
-    svg.append("g").attr("class", "grid-lines horizontal-grid").call(d3.axisLeft(yScale).tickSize(-width).tickFormat(""));
-    svg.selectAll(".bar").data(data).enter().append("rect").attr("class", "bar").attr("x", d => xScale(d.startDate)).attr("y", d => yScale(d.依頼番号)).attr("width", d => Math.max(1, xScale(d.endDate) - xScale(d.startDate))).attr("height", yScale.bandwidth()).attr("fill", d => colorScale(d.カテゴリ)).style("cursor", "pointer").on("mouseover", (event, d) => {
-        d3.select(event.currentTarget).style("opacity", 0.7);
-        const content = `<div class="font-bold text-base mb-2 pb-2 border-b" style="color: ${colorScale(d.カテゴリ)}">${d.依頼番号}</div><p><strong>カテゴリ:</strong> ${d.カテゴリ}</p><p><strong>期間:</strong> ${d.開始日} ~ ${d.完了日}</p><p><strong>総日数:</strong> ${d.総日数} 日</p><p><strong>作業人日:</strong> ${d.作業人日.toFixed(1)}</p><p><strong>アイテム:</strong> ${d.アイテム}</p>`;
-        showTooltip(event, content);
-    }).on("mouseleave", (event, d) => {
-        d3.select(event.currentTarget).style("opacity", 1);
-        hideTooltip();
-    });
-    svg.append("g").call(d3.axisLeft(yScale));
-    svg.append("g").attr("transform", `translate(0, ${height})`).call(d3.axisBottom(xScale).ticks(d3.timeWeek.every(1)).tickFormat(d3.timeFormat("%m/%d")));
-}
-function drawMonthlyCountChart(data) {
-    const monthlyCounts = Array.from(d3.rollup(data, v => v.length, d => d.month), ([month, count]) => ({month, count})).sort((a, b) => d3.ascending(a.month, b.month));
-    const container = d3.select("#monthly-count-chart");
-    container.select("svg").remove();
-    const containerWidth = container.node().getBoundingClientRect().width;
-    const margin = {top: 20, right: 20, bottom: 50, left: 50};
-    const width = containerWidth - margin.left - margin.right;
-    const height = 250 - margin.top - margin.bottom;
-    const svg = container.append("svg").attr("viewBox", `0 0 ${width + margin.left + margin.right} ${height + margin.top + margin.bottom}`).append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-    const xScale = d3.scaleBand().domain(monthlyCounts.map(d => d.month)).range([0, width]).padding(0.4);
-    const yScale = d3.scaleLinear().domain([0, d3.max(monthlyCounts, d => d.count) * 1.1]).range([height, 0]);
-    svg.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(xScale)).selectAll("text").attr("transform", "translate(-10,0)rotate(-45)").style("text-anchor", "end");
-    svg.append("g").call(d3.axisLeft(yScale));
-    svg.selectAll("rect").data(monthlyCounts).enter().append("rect").attr("x", d => xScale(d.month)).attr("y", d => yScale(d.count)).attr("width", xScale.bandwidth()).attr("height", d => height - yScale(d.count)).attr("fill", "#3b82f6").on("mouseover", (event, d) => {
-        const content = `<strong>${d.month}</strong><br>依頼件数: ${d.count}件`;
-        showTooltip(event, content);
-    }).on("mouseleave", hideTooltip);
-}
-function drawCategoryChart(data) {
-    const allCategories = [...new Set(data.map(d => d.カテゴリ))].sort();
-    const monthlyRollup = d3.rollup(data, v => d3.rollup(v, g => g.length, d => d.カテゴリ), d => d.month);
-    const monthlySummary = Array.from(monthlyRollup, ([month, categoriesMap]) => {
-        const entry = { month };
-        allCategories.forEach(cat => entry[cat] = categoriesMap.get(cat) || 0);
-        return entry;
-    }).sort((a, b) => d3.ascending(a.month, b.month));
-    const stack = d3.stack().keys(allCategories);
-    const stackedData = stack(monthlySummary);
-    const container = d3.select("#monthly-category-chart");
-    container.select("svg").remove();
-    const containerWidth = container.node().getBoundingClientRect().width;
-    const margin = {top: 20, right: 20, bottom: 50, left: 50};
-    const width = containerWidth - margin.left - margin.right;
-    const height = 250 - margin.top - margin.bottom;
-    const svg = container.append("svg").attr("viewBox", `0 0 ${width + margin.left + margin.right} ${height + margin.top + margin.bottom}`).append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-    const xScale = d3.scaleBand().domain(monthlySummary.map(d => d.month)).range([0, width]).padding(0.4);
-    const yScale = d3.scaleLinear().domain([0, d3.max(monthlySummary, d => d3.sum(allCategories, cat => d[cat])) * 1.1]).range([height, 0]);
-    const colorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(allCategories);
-    svg.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(xScale)).selectAll("text").attr("transform", "translate(-10,0)rotate(-45)").style("text-anchor", "end");
-    svg.append("g").call(d3.axisLeft(yScale));
-    svg.selectAll(".stack").data(stackedData).enter().append("g").attr("class", "stack").attr("fill", d => colorScale(d.key)).selectAll("rect").data(d => d).enter().append("rect").attr("x", d => xScale(d.data.month)).attr("y", d => yScale(d[1])).attr("width", xScale.bandwidth()).attr("height", d => yScale(d[0]) - yScale(d[1])).on("mouseover", (event, d) => {
-        const category = d3.select(event.currentTarget.parentNode).datum().key;
-        const count = d.data[category];
-        const total = d3.sum(allCategories, cat => d.data[cat]);
-        const percentage = total > 0 ? (count / total * 100).toFixed(1) : 0;
-        const content = `<strong>${d.data.month}</strong><br>カテゴリ: ${category}<br>件数: ${count}件 (${percentage}%)`;
-        showTooltip(event, content);
-    }).on("mouseleave", hideTooltip);
-    const legend = d3.select("#category-legend");
-    legend.selectAll("*").remove();
-    allCategories.forEach(category => {
-        const legendItem = legend.append("div").attr("class", "legend-item");
-        legendItem.append("div").attr("class", "legend-color").style("background-color", colorScale(category));
-        legendItem.append("span").text(category);
-    });
-}
-function drawItemChart(data) {
-    const allCategories = [...new Set(data.map(d => d.カテゴリ))].sort();
-    const itemGroups = d3.group(data, d => d.cleanItem);
-    let itemSummary = Array.from(itemGroups, ([item, values]) => {
-        const entry = { item };
-        let total = 0;
-        allCategories.forEach(cat => {
-            const sumManDays = d3.sum(values.filter(d => d.カテゴリ === cat), d => d.作業人日);
-            entry[cat] = sumManDays;
-            total += sumManDays;
-        });
-        entry.total = total;
-        return entry;
-    }).sort((a, b) => d3.descending(a.total, b.total));
-    itemSummary = itemSummary.filter(d => d.total > 0).slice(0, 30);
-    const stack = d3.stack().keys(allCategories);
-    const stackedData = stack(itemSummary);
-    const container = d3.select("#item-summary-chart");
-    container.select("svg").remove();
-    const containerWidth = container.node().getBoundingClientRect().width;
-    const margin = {top: 20, right: 40, bottom: 50, left: 200};
-    const height = itemSummary.length * 25;
-    const chartHeight = height + margin.top + margin.bottom;
-    const width = containerWidth - margin.left - margin.right;
-    const svg = container.append("svg").attr("viewBox", `0 0 ${width + margin.left + margin.right} ${chartHeight}`).append("g").attr("transform", `translate(${margin.left},${margin.top})`);
-    const itemNames = itemSummary.map(d => d.item);
-    const yScale = d3.scaleBand().domain(itemNames).range([0, height]).padding(0.2);
-    const xScale = d3.scaleLinear().domain([0, d3.max(itemSummary, d => d.total) * 1.1]).range([0, width]);
-    const colorScale = d3.scaleOrdinal(d3.schemeTableau10).domain(allCategories);
-    svg.append("g").attr("transform", `translate(0,${height})`).call(d3.axisBottom(xScale).ticks(5));
-    svg.append("g").call(d3.axisLeft(yScale));
-    const barGroups = svg.selectAll(".stack").data(stackedData).enter().append("g").attr("class", "stack").attr("fill", d => colorScale(d.key));
-    barGroups.selectAll("rect").data(d => d).enter().append("rect").attr("y", d => yScale(d.data.item)).attr("x", d => xScale(d[0])).attr("height", yScale.bandwidth()).attr("width", d => xScale(d[1]) - xScale(d[0])).on("mouseover", (event, d) => {
-        const category = d3.select(event.currentTarget.parentNode).datum().key;
-        const manDays = d.data[category];
-        const content = `<strong>${d.data.item}</strong><br>カテゴリ: ${category}<br>作業人日: ${manDays.toFixed(1)}`;
-        showTooltip(event, content);
-    }).on("mouseleave", hideTooltip);
-    svg.selectAll(".label").data(itemSummary).enter().append("text").attr("class", "label").attr("x", d => xScale(d.total) + 4).attr("y", d => yScale(d.item) + yScale.bandwidth() / 2).attr("dy", ".35em").style("font-size", "10px").style("fill", "#374151").text(d => d.total.toFixed(1));
-}
-function drawOverallCategoryChart(data) {
-    const container = d3.select("#overall-category-chart");
-    container.select("svg").remove();
-    const categoryCounts = d3.rollup(data, v => v.length, d => d.カテゴリ);
-    const total = data.length;
-    const pieData = Array.from(categoryCounts, ([key, value]) => ({ key, value }));
-    const containerWidth = container.node().getBoundingClientRect().width;
-    const height = containerWidth * 0.9;
-    const radius = Math.min(containerWidth, height) / 2;
-    const svg = container.append("svg").attr("viewBox", `0 0 ${containerWidth} ${height}`).append("g").attr("transform", `translate(${containerWidth / 2}, ${height / 2})`);
-    const colorScale = d3.scaleOrdinal(d3.schemeTableau10).domain([...new Set(data.map(d => d.カテゴリ))].sort());
-    const pie = d3.pie().value(d => d.value).sort(null);
-    const arc = d3.arc().innerRadius(radius * 0.6).outerRadius(radius * 0.9);
-    const arcHover = d3.arc().innerRadius(radius * 0.6).outerRadius(radius * 0.95);
-    const centerTextVal = svg.append("text").attr("id", "donut-center-text-val").attr("text-anchor", "middle").attr("dy", "-0.1em");
-    const centerTextLabel = svg.append("text").attr("id", "donut-center-text-label").attr("text-anchor", "middle").attr("dy", "1.1em");
-    centerTextVal.text(`${total}`);
-    centerTextLabel.text("総依頼件数");
-    svg.selectAll('path').data(pie(pieData)).enter().append('path').attr('d', arc).attr('fill', d => colorScale(d.data.key)).attr('stroke', 'white').style('stroke-width', '3px').style("cursor", "pointer").transition().duration(750).attrTween("d", function(d) {
-        const i = d3.interpolate(d.startAngle, d.endAngle);
-        return function(t) {
-            d.endAngle = i(t);
-            return arc(d);
-        }
-    });
-    svg.selectAll('path').on("mouseover", (event, d) => {
-        d3.select(event.currentTarget).transition().duration(200).attr("d", arcHover);
-        const percentage = (d.data.value / total * 100).toFixed(1);
-        centerTextVal.text(`${percentage}%`);
-        centerTextLabel.text(d.data.key);
-        const content = `<strong>${d.data.key}</strong><br>件数: ${d.data.value}件`;
-        showTooltip(event, content);
-    }).on("mouseleave", (event, d) => {
-        d3.select(event.currentTarget).transition().duration(200).attr("d", arc);
-        centerTextVal.text(`${total}`);
-        centerTextLabel.text("総依頼件数");
-        hideTooltip();
-    });
-}
-
-// --- Step 3: 全体の処理を実行するメインの関数 ---
-async function initializeDashboard() {
-    const API_URL = 'https://script.google.com/macros/s/AKfycbw04x1-aG3_5R6kR-K-OQh2e3lK-K-r-R-l-T-s-W-o-R-k/exec'; // New URL
-
-    const jsonData = await fetchDataFromAPI(API_URL);
-
-    if (jsonData) {
-        const fullDataset = parseData(jsonData);
-        const ganttData = [...fullDataset].sort((a, b) => d3.ascending(a.startDate, b.startDate));
-
-        // ★★★ ここが修正点です ★★★
-        function drawAllCharts() {
-            drawGanttChart(ganttData);
-            drawOverallCategoryChart(fullDataset);
-            drawMonthlyCountChart(fullDataset);
-            drawCategoryChart(fullDataset);
-            drawItemChart(fullDataset);
+    <script>
+        async function fetchDataFromAPI(apiUrl) {
+            try {
+                const url = `${apiUrl}?t=${new Date().getTime()}`;
+                const response = await fetch(url);
+                if (!response.ok) { throw new Error('APIの読み込みに失敗しました。'); }
+                return await response.json();
+            } catch (error) {
+                console.error('データ取得エラー:', error);
+                document.body.innerHTML = `<div class="text-center p-8"><p class="text-red-600 font-bold">${error.message}</p></div>`;
+                return null;
+            }
         }
 
-        drawAllCharts();
-        window.addEventListener('resize', drawAllCharts);
-    }
-}
+        function parseData(jsonData) {
+            return jsonData.map(item => {
+                const itemStr = item['アイテム'] || '-';
+                const obj = {
+                    依頼番号: item['依頼番号'], 開始日: item['開始日'], 完了日: item['完了日'],
+                    総日数: parseFloat(item['総日数']) || 0, 作業人日: parseFloat(item['作業人日']) || 0,
+                    カテゴリ: item['カテゴリ'] || '不明', アイテム: itemStr, 型番: item['型番'],
+                    依頼部署: item['依頼部署'] || '不明', cleanItem: getCleanItemName(itemStr),
+                    month: item['開始日'] ? new Date(item['開始日']).toISOString().substring(0, 7) : '不明',
+                    startDate: new Date(item['開始日']),
+                    endDate: new Date(new Date(item['完了日']).getTime() + (24 * 60 * 60 * 1000))
+                };
+                if (isNaN(obj.startDate.getTime())) return null;
+                return obj;
+            }).filter(d => d !== null);
+        }
 
-// --- ページの読み込みが完了したらダッシュボードを初期化 ---
-document.addEventListener('DOMContentLoaded', initializeDashboard);
+        const tooltip = d3.select("#tooltip");
+        function showTooltip(event, content) {
+            tooltip.style("opacity", 1).html(content);
+            const tooltipNode = tooltip.node();
+            const containerNode = d3.select('body').node();
+            let left = event.pageX + 15; let top = event.pageY - 15;
+            if (left + tooltipNode.offsetWidth > containerNode.clientWidth) { left = event.pageX - tooltipNode.offsetWidth - 15; }
+            if (top + tooltipNode.offsetHeight > containerNode.clientHeight) { top = event.pageY - tooltipNode.offsetHeight; }
+            if (top < 0) { top = event.pageY + 15; }
+            tooltip.style("left", `${left}px`).style("top", `${top}px`);
+        }
+        function hideTooltip() { tooltip.style("opacity", 0); }
+        function getCleanItemName(itemStr) {
+            const patterns = [
+                { pattern: /(ねしずえ\(\d+次\))/, name: 'ねしずえ(n次)' }, { pattern: /(ねソニック\(\d+次\))/, name: 'ねソニック(n次)' },
+                { pattern: /(ねリヴァイ\(\d+次\))/, name: 'ねリヴァイ(n次)' }, { pattern: /(Mかにクレーン\(\d+次\))/, name: 'Mかにクレーン(n次)' },
+                { pattern: /(ねハンジ\(再\))/, name: 'ねハンジ(再)' }, { pattern: /(ね太宰\(\d+次\))/, name: 'ね太宰(n次)' },
+                { pattern: /(ねアルフォンス\(\d+次\))/, name: 'ねアルフォンス(n次)' }, { pattern: /(ねエドワード\(\d+次\))/, name: 'ねエドワード(n次)' },
+                { pattern: /(SCイレイナ\(再\))/, name: 'SCイレイナ(再)' }, { pattern: /(Mバルディ\(再\))/, name: 'Mバルディ(再)' },
+                { pattern: /(ね桜ミク\(再\))/, name: 'ね桜ミク(再)' }, { pattern: /(Hbオベロン3rd)/, name: 'Hbオベロン3rd' },
+                { pattern: /(Hbセバスチャン)/, name: 'Hbセバスチャン' }, { pattern: /(Hbスニーカーroot)/, name: 'Hbスニーカーroot' },
+                { pattern: /(ジャック共通ベース|モスマン共通ベース)/, name: 'ジャック共通ベース' }, { pattern: /(archGirlアーキタイプ)/, name: 'archGirlアーキタイプ' },
+                { pattern: /(ねど碇シンジ)/, name: 'ねど碇シンジ' }, { pattern: /(シンプルスタンド|Simpタワータイプ)/, name: 'シンプルスタンド' },
+                { pattern: /(スライムフィールドベース)/, name: 'スライムフィールドベース' }, { pattern: /(ね展示用パーカー)/, name: 'ね展示用パーカー' },
+                { pattern: /(ジャックプラモ共用金型)/, name: 'ジャックプラモ共用金型' }, { pattern: /(デモニホプラモ共用金型)/, name: 'デモニホプラモ共用金型' },
+                { pattern: /(ねんどろFM|フェイスメーカー鼻あり)/, name: 'フェイスメーカー/FM' }, { pattern: /(PAジュピター)/, name: 'PAジュピター' },
+                { pattern: /(特典)/, name: '特典' },
+            ];
+            if (typeof itemStr !== 'string') return '不明';
+            for (const p of patterns) { if (p.pattern.test(itemStr))
